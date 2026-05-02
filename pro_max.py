@@ -349,6 +349,8 @@ class RetroPhoneApp(ctk.CTk):
 
         self.withdraw()
 
+        profile_path = "/home/phone/max_profile"
+
         self.max_process = subprocess.Popen([
             "chromium",
             "--kiosk",
@@ -357,6 +359,7 @@ class RetroPhoneApp(ctk.CTk):
             "--disable-infobars",
             "--disable-features=TranslateUI",
             "--start-fullscreen",
+            f"--user-data-dir={profile_path}",
             MAX_URL
         ])
 
