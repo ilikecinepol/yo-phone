@@ -45,7 +45,8 @@ class RetroPhoneApp(ctk.CTk):
 
         # SMS STORAGE 📩
         self.sms_list = []
-
+        self.sms_list = []  # список SMS (как строки)
+        self.sms_selected = None  # индекс выбранной SMS
         # =========================
         # HOOK
         # =========================
@@ -119,6 +120,21 @@ class RetroPhoneApp(ctk.CTk):
         self.after(50, self.check_hook)
         self.after(500, self.blink_loop)
 
+    def decode_sms(self, text):
+        try:
+            # пробуем UCS2 (SIM800L часто так шлёт)
+            if all(c in "0123456789ABCDEFabcdef" for c in text.replace("\r", "")):
+                return bytes.fromhex(text).decode("utf-16-be")
+        except:
+            pass
+
+        return text
+
+    def return_to_idle(self):
+        self.state = self.STATE_IDLE
+        self.sms_selected = None
+        self.draw()
+
     # =========================
     # BLINK
     # =========================
@@ -159,6 +175,7 @@ class RetroPhoneApp(ctk.CTk):
             return bytes_data.decode("utf-16-be")
         except:
             return data
+
     def read_sim800(self):
         while self.running:
             try:
@@ -180,16 +197,21 @@ class RetroPhoneApp(ctk.CTk):
                         pass
 
                 if "+CMT:" in line:
-                    msg = self.ser.readline().decode(errors="ignore").strip()
+                    try:
+                        header = line
+                        msg = self.ser.readline().decode(errors="ignore").strip()
 
-                    decoded = self.decode_ucs2(msg)
+                        decoded = self.decode_sms(msg)
 
-                    self.sms_list.append(decoded)
+                        self.sms_list.append(decoded)
 
-                    if len(self.sms_list) > 10:
-                        self.sms_list.pop(0)
+                        if len(self.sms_list) > 30:
+                            self.sms_list.pop(0)
 
-                    print("📩 SMS:", decoded)
+                        print("📩 SMS STORED:", decoded)
+
+                    except:
+                        pass
 
             except:
                 pass
@@ -269,15 +291,35 @@ class RetroPhoneApp(ctk.CTk):
 
             if raw == GPIO.LOW:
                 print("📞 HOOK OFF")
+
+                # входящий звонок
                 if self.incoming_call:
                     self.answer_call()
                 else:
                     n = self.format_number(self.number)
                     if n:
                         self.call_number(n)
+
+
             else:
+
                 print("📴 HOOK ON")
-                self.hangup()
+
+                self.incoming_call = False
+
+                self.call_sent = False
+
+                if hasattr(self, "max_process"):
+
+                    try:
+
+                        self.max_process.terminate()
+
+                    except:
+
+                        pass
+
+                self.show_ui()
 
         self.after(50, self.check_hook)
 
@@ -288,7 +330,10 @@ class RetroPhoneApp(ctk.CTk):
         self.state = self.STATE_MENU
         self.draw()
 
-    def open_sms(self):
+    def open_sms(self, index=None):
+        if index is not None and (index < 0 or index >= len(self.sms_list)):
+            return
+        self.sms_selected = index
         self.state = self.STATE_SMS
         self.draw()
 
@@ -302,18 +347,43 @@ class RetroPhoneApp(ctk.CTk):
     def open_max(self):
         print("🌐 OPEN MAX")
 
-        self.withdraw()  # скрываем телефон UI
+        self.withdraw()
 
-        subprocess.Popen([
+        self.max_process = subprocess.Popen([
             "chromium",
             "--kiosk",
             "--noerrdialogs",
             "--disable-session-crashed-bubble",
+            "--disable-infobars",
+            "--disable-features=TranslateUI",
+            "--start-fullscreen",
             MAX_URL
         ])
 
-        # вернуть UI через 10 сек (для теста)
-        self.after(10000, self.deiconify)
+
+    def show_ui(self):
+        self.deiconify()
+        self.state = self.STATE_IDLE
+        self.sms_selected = None
+        self.incoming_call = False
+        self.call_sent = False
+
+        self.lift()
+        self.focus_force()
+
+        self.draw()
+
+
+    def close_max(self):
+        print("⬅ CLOSE MAX")
+
+        if hasattr(self, "max_process"):
+            try:
+                self.max_process.terminate()
+            except:
+                pass
+
+        self.show_ui()
 
     # =========================
     # DRAW
@@ -323,17 +393,54 @@ class RetroPhoneApp(ctk.CTk):
         cx, cy = 400, 400
 
         # SMS SCREEN 📩
-        if self.state == self.STATE_SMS:
-            self.canvas.create_text(cx, 80, text="SMS",
+        if self.state == self.STATE_SMS and self.sms_selected is None:
+
+            self.canvas.create_text(400, 80,
+                                    text="SMS",
                                     fill="white",
                                     font=("Arial", 30, "bold"))
 
-            y = 150
-            for msg in self.sms_list[-5:]:
-                self.canvas.create_text(cx, y, text=msg,
-                                        fill="lightgreen",
-                                        font=("Arial", 16))
-                y += 80
+            y = 180
+
+            # список SMS
+            for i, msg in enumerate(self.sms_list[-5:]):
+                idx = len(self.sms_list) - 5 + i
+
+                self.canvas.create_rectangle(
+                    120, y - 40, 680, y + 40,
+                    fill="#1f2937",
+                    tags=f"sms_{idx}"
+                )
+
+                preview = msg[:25] + ("..." if len(msg) > 25 else "")
+
+                self.canvas.create_text(
+                    400, y,
+                    text=preview,
+                    fill="white",
+                    font=("Arial", 16)
+                )
+
+                self.canvas.tag_bind(
+                    f"sms_{idx}",
+                    "<Button-1>",
+                    lambda e, i=idx: self.open_sms(i)
+                )
+
+                y += 100
+
+            # назад
+            self.canvas.create_rectangle(300, 700, 500, 770,
+                                         fill="#dc2626",
+                                         tags="back_sms")
+
+            self.canvas.create_text(400, 735,
+                                    text="Назад",
+                                    fill="white")
+
+            self.canvas.tag_bind("back_sms",
+                                 "<Button-1>",
+                                 lambda e: self.close_sms())
 
             return
 
@@ -354,13 +461,82 @@ class RetroPhoneApp(ctk.CTk):
                                     fill="white", tags="sms")
 
             self.canvas.tag_bind("max", "<Button-1>", lambda e: self.open_max())
-            self.canvas.tag_bind("sms", "<Button-1>", lambda e: self.open_sms())
+            self.canvas.tag_bind("sms", "<Button-1>", lambda e: self.open_sms(None))
 
             return
+        if self.state == self.STATE_INCOMING:
+            self.canvas.create_text(400, 120,
+                                    text="ВХОДЯЩИЙ ЗВОНОК",
+                                    fill="white",
+                                    font=("Arial", 30, "bold"))
 
+            self.canvas.create_text(400, 200,
+                                    text=self.incoming_number or "Неизвестный номер",
+                                    fill="#22c55e",
+                                    font=("Arial", 26, "bold"))
+
+            # стрелка вниз
+            self.canvas.create_text(400, 320,
+                                    text="⬇",
+                                    fill="#22c55e",
+                                    font=("Arial", 80, "bold"))
+
+            self.canvas.create_text(400, 500,
+                                    text="Снимите трубку",
+                                    fill="gray",
+                                    font=("Arial", 18))
+            return
+        if self.state == self.STATE_OUTGOING:
+            self.canvas.create_text(400, 120,
+                                    text="ИСХОДЯЩИЙ ЗВОНОК",
+                                    fill="white",
+                                    font=("Arial", 30, "bold"))
+
+            self.canvas.create_text(400, 200,
+                                    text=self.outgoing_number,
+                                    fill="#60a5fa",
+                                    font=("Arial", 26, "bold"))
+
+            self.canvas.create_text(400, 320,
+                                    text="📞",
+                                    fill="#60a5fa",
+                                    font=("Arial", 80, "bold"))
+
+            self.canvas.create_text(400, 500,
+                                    text="Идёт набор...",
+                                    fill="gray",
+                                    font=("Arial", 18))
+            return
+        if self.state == self.STATE_CALLING:
+            self.canvas.create_text(400, 120,
+                                    text="РАЗГОВОР",
+                                    fill="white",
+                                    font=("Arial", 30, "bold"))
+
+            self.canvas.create_text(400, 200,
+                                    text=self.incoming_number or self.outgoing_number,
+                                    fill="#fbbf24",
+                                    font=("Arial", 26, "bold"))
+
+            self.canvas.create_text(400, 320,
+                                    text="● ● ●",
+                                    fill="#fbbf24",
+                                    font=("Arial", 50, "bold"))
+            return
+        self.canvas.create_rectangle(200, 460, 600, 540,
+                                     fill="#374151", tags="back_from_max")
+
+        self.canvas.create_text(cx, 500,
+                                text="НАЗАД",
+                                fill="white",
+                                tags="back_from_max")
+
+        self.canvas.tag_bind("back_from_max",
+                             "<Button-1>",
+                             lambda e: self.close_max())
         # MAIN DIAL (оставлено без изменений)
-        self.canvas.create_oval(5,5,795,795,fill="#020617")
-        self.canvas.create_oval(40,40,760,760,fill="#111827")
+        self.canvas.create_oval(5, 5, 795, 795, fill="#020617")
+        self.canvas.create_oval(40, 40, 760, 760, fill="#111827")
 
         for d in self.digits:
             ang = self.angle_map[d] + self.angle_offset - self.dial_angle
@@ -368,60 +544,62 @@ class RetroPhoneApp(ctk.CTk):
             x = cx + 275 * math.cos(rad)
             y = cy - 275 * math.sin(rad)
 
-            self.canvas.create_oval(x-45,y-45,x+45,y+45,fill="white")
-            self.canvas.create_text(x,y,text=d,font=("Arial",24,"bold"))
+            self.canvas.create_oval(x - 45, y - 45, x + 45, y + 45, fill="white")
+            self.canvas.create_text(x, y, text=d, font=("Arial", 24, "bold"))
 
-        self.canvas.create_text(cx, cy-90,
+        self.canvas.create_text(cx, cy - 90,
                                 text=self.number or "Номер",
-                                fill="white")
+                                fill="white",
+                                font = ("Arial", 48, "bold"))
 
-        self.canvas.create_oval(350,350,450,450,fill="#1e293b",tags="menu")
-        self.canvas.create_text(cx,cy,text="☰",fill="white",tags="menu")
+        self.canvas.create_oval(350, 350, 450, 450, fill="#1e293b", tags="menu")
+        self.canvas.create_text(cx, cy, text="☰", fill="white", tags="menu")
 
-        self.canvas.tag_bind("menu","<Button-1>",lambda e:self.open_menu())
+        self.canvas.tag_bind("menu", "<Button-1>", lambda e: self.open_menu())
 
     # ROTARY (без изменений)
-    def on_press(self,e):
-        self.selected_digit=self.detect_digit(e.x,e.y)
-        if not self.selected_digit:return
-        self.dragging=True
-        self.start_angle=self.get_angle(e.x,e.y)
-        self.dial_angle=0
+    def on_press(self, e):
+        self.selected_digit = self.detect_digit(e.x, e.y)
+        if not self.selected_digit: return
+        self.dragging = True
+        self.start_angle = self.get_angle(e.x, e.y)
+        self.dial_angle = 0
 
-    def on_drag(self,e):
-        if not self.dragging:return
-        self.dial_angle=(self.start_angle-self.get_angle(e.x,e.y))%360
+    def on_drag(self, e):
+        if not self.dragging: return
+        self.dial_angle = (self.start_angle - self.get_angle(e.x, e.y)) % 360
         self.draw()
 
-    def on_release(self,e):
-        if self.dragging and self.dial_angle>=60:
-            self.number+=self.selected_digit
-        self.dragging=False
+    def on_release(self, e):
+        if self.dragging and self.dial_angle >= 60:
+            self.number += self.selected_digit
+        self.dragging = False
         self.animate_back()
 
     def animate_back(self):
-        if self.dial_angle<=0:
-            self.dial_angle=0
+        if self.dial_angle <= 0:
+            self.dial_angle = 0
             self.draw()
             return
-        self.dial_angle-=18
+        self.dial_angle -= 18
         self.draw()
-        self.after(10,self.animate_back)
+        self.after(10, self.animate_back)
 
-    def get_angle(self,x,y):
-        return (math.degrees(math.atan2(400-y,x-400))+360)%360
+    def get_angle(self, x, y):
+        return (math.degrees(math.atan2(400 - y, x - 400)) + 360) % 360
 
-    def detect_digit(self,x,y):
-        best=None;bd=1e9
-        for d,a in self.angle_map.items():
-            rad=math.radians(a+self.angle_offset)
-            dx=400+275*math.cos(rad)
-            dy=400-275*math.sin(rad)
-            dist=(dx-x)**2+(dy-y)**2
-            if dist<bd:best=d;bd=dist
-        return best if bd<4900 else None
+    def detect_digit(self, x, y):
+        best = None;
+        bd = 1e9
+        for d, a in self.angle_map.items():
+            rad = math.radians(a + self.angle_offset)
+            dx = 400 + 275 * math.cos(rad)
+            dy = 400 - 275 * math.sin(rad)
+            dist = (dx - x) ** 2 + (dy - y) ** 2
+            if dist < bd: best = d;bd = dist
+        return best if bd < 4900 else None
 
 
-if __name__=="__main__":
-    app=RetroPhoneApp()
+if __name__ == "__main__":
+    app = RetroPhoneApp()
     app.mainloop()
