@@ -35,6 +35,11 @@ class RetroPhoneApp(ctk.CTk):
         self.call_sent = False
         self.answer_sent = False
 
+        self.incoming_call = False
+        self.call_sent = False
+        self.answer_sent = False
+        self.max_opened = False
+
         self.sms_list = []
         self.sms_selected = None
 
@@ -199,6 +204,7 @@ class RetroPhoneApp(ctk.CTk):
                 if self.is_hook_off():
                     print("📞 HOOK OFF")
 
+
                     if self.state == self.STATE_INCOMING or self.incoming_call:
                         if not self.answer_sent:
                             self.answer_call()
@@ -226,12 +232,10 @@ class RetroPhoneApp(ctk.CTk):
                     self.outgoing_number = ""
                     self.incoming_number = ""
 
-                    if hasattr(self, "max_process"):
-                        try:
-                            self.max_process.terminate()
-                        except:
-                            pass
-
+                    if self.max_opened:
+                        self.close_max()
+                        self.after(50, self.check_hook)
+                        return
                     self.show_ui()
 
         except Exception as e:
@@ -420,6 +424,7 @@ class RetroPhoneApp(ctk.CTk):
     def open_max(self):
         print("🌐 OPEN MAX")
 
+        self.max_opened = True
         self.withdraw()
 
         self.max_process = subprocess.Popen([
@@ -431,20 +436,28 @@ class RetroPhoneApp(ctk.CTk):
             "--disable-features=TranslateUI",
             "--autoplay-policy=no-user-gesture-required",
             "--use-fake-ui-for-media-stream",
-            "--unsafely-treat-insecure-origin-as-secure=https://web.max.ru",
-            "--allow-running-insecure-content",
             "--user-data-dir=/home/phone/max_profile",
+            "--profile-directory=Default",
             MAX_URL
         ])
 
     def close_max(self):
         print("⬅ CLOSE MAX")
 
+        self.max_opened = False
+
         if hasattr(self, "max_process"):
             try:
                 self.max_process.terminate()
+                self.max_process.wait(timeout=5)
             except:
-                pass
+                try:
+                    self.max_process.kill()
+                except:
+                    pass
+
+        time.sleep(0.5)
+        self.show_ui()
 
         self.show_ui()
 
